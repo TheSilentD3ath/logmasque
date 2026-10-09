@@ -17,6 +17,39 @@ Everything runs locally. The browser interface talks only to a server on `127.0.
 
 > **Reversible pseudonymization is not anonymization.** Masked output can still identify people or systems through context, and anyone holding the mapping store can restore every value. Always read the result before you share it. See [Privacy and security considerations](#privacy-and-security-considerations).
 
+## Interface preview
+
+The German-language interface brings log collection and reversible masking into one local workspace. These screenshots use demonstration data and example paths.
+
+### Log collection
+
+Select log types and dates from folders and ZIP archives, then collect the selected files into a folder or archive.
+
+![Log collection with a date-by-type selection matrix and ZIP output settings](docs/screenshots/01-log-collection.png)
+
+<details>
+<summary>Explore masking, before-and-after previews, and restoration</summary>
+
+### File masking
+
+Process several files together and review the replacement counts and output paths.
+
+![File masking with three selected logs, a completed summary, and mapping-store counts](docs/screenshots/02-file-masking.png)
+
+### Before and after
+
+Compare the original text with highlighted placeholders for technical and personal data. Custom terms and patterns cover case-specific values.
+
+![Original support message alongside its masked version with highlighted placeholders](docs/screenshots/03-before-after.png)
+
+### Restoration and mapping management
+
+Restore placeholders using the matching local mapping store. The store panel provides counts, diagnosis, export, import, and reset controls.
+
+![Masked support message restored to its original values with mapping-store controls alongside](docs/screenshots/04-restoration.png)
+
+</details>
+
 ## Features
 
 ### Collecting logs
