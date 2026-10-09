@@ -1,0 +1,25 @@
+{
+  "Version": 2,
+  "Updated": "2026-09-01T10:00:00",
+  "IPv4": {
+    "203.0.113.7": "[IPv4-001]",
+    "198.51.100.12": "[IPv4-002]"
+  },
+  "IPv6": {
+    "2001:db8::1": "[IPv6-001]"
+  },
+  "Domain": {
+    "kunde-gmbh.example": "kunde001.tld",
+    "absender-ag.example": "kunde002.tld"
+  },
+  "Local": {
+    "rechnung@kunde-gmbh.example": "user001"
+  },
+  "Host": {
+    "mx3": "host001",
+    "mail": "host002"
+  },
+  "Extra": {
+    "Projekt-Zebra": "[WERT-001]"
+  }
+}

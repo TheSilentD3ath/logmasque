@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LogMasque</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="toolbar">
+  <div class="toolbar-title">
+    <span class="app-mark" aria-hidden="true"></span>
+    <div>
+      <h1>LogMasque</h1>
+      <p class="toolbar-sub" id="toolbar-sub">Sammeln und anonymisieren</p>
+    </div>
+  </div>
+
+  <div class="segmented" role="tablist" aria-label="Werkzeug">
+    <button role="tab" id="tab-collect" aria-selected="true" data-view="collect">Sammeln</button>
+    <button role="tab" id="tab-anonymize" aria-selected="false" data-view="anonymize">Anonymisieren</button>
+  </div>
+
+  <div class="toolbar-status" id="toolbar-status" aria-live="polite"></div>
+</header>
+
+<main>
+
+<!-- ───────────────────────────── Sammeln ───────────────────────────── -->
+<section class="view" id="view-collect" aria-labelledby="tab-collect">
+  <div class="layout">
+    <div class="column">
+
+      <section class="card">
+        <header class="card-head">
+          <h2><span class="step">1</span> Quellen</h2>
+          <div class="card-actions">
+            <button class="btn" data-action="add-folder">Ordner …</button>
+            <button class="btn" data-action="add-files">Dateien …</button>
+          </div>
+        </header>
+        <div class="card-body">
+          <ul class="list" id="collect-sources" aria-label="Ausgewählte Quellen"></ul>
+          <p class="empty" id="collect-sources-empty">Noch keine Quelle. ZIP-Archive werden gelesen, ohne sie zu entpacken.</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card-head">
+          <h2><span class="step">2</span> Auswahl</h2>
+          <div class="card-actions">
+            <button class="btn" data-action="scan">Quellen durchsuchen</button>
+          </div>
+        </header>
+        <div class="card-body">
+          <p class="empty" id="matrix-empty">Nach dem Durchsuchen erscheint hier, welche Logarten an welchen Tagen vorliegen. Zellen, Zeilen und Spalten sind anklickbar.</p>
+          <div class="matrix-wrap" id="matrix-wrap" hidden>
+            <table class="matrix" id="matrix"></table>
+          </div>
+          <div class="matrix-footer" id="matrix-footer" hidden>
+            <div class="selection-summary" id="selection-summary"></div>
+            <div class="card-actions">
+              <div class="matrix-scroll" id="matrix-scroll" hidden>
+                <button class="btn btn-quiet" data-action="days-back" title="Frühere Tage" aria-label="Frühere Tage">‹</button>
+                <button class="btn btn-quiet" data-action="days-forward" title="Spätere Tage" aria-label="Spätere Tage">›</button>
+              </div>
+              <button class="btn btn-quiet" data-action="select-all">Alles</button>
+              <button class="btn btn-quiet" data-action="select-none">Nichts</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card-head">
+          <h2><span class="step">3</span> Ergebnis</h2>
+        </header>
+        <div class="card-body">
+          <div class="segmented segmented-inline" id="collect-mode" role="radiogroup" aria-label="Ausgabeform">
+            <button role="radio" aria-checked="true" data-mode="folder">Ordner</button>
+            <button role="radio" aria-checked="false" data-mode="archive">ZIP-Archiv</button>
+          </div>
+          <div class="field">
+            <label for="collect-target">Ziel</label>
+            <div class="input-row">
+              <input type="text" id="collect-target" placeholder="Zielordner wählen …" spellcheck="false">
+              <button class="btn" data-action="pick-target">Wählen …</button>
+            </div>
+            <p class="hint" id="collect-target-hint">Ein leerer oder neuer Ordner. Die Originale bleiben unverändert.</p>
+          </div>
+          <label class="check"><input type="checkbox" id="collect-fallback"> Bei undatierten Logs das Datum des ZIP-Dateinamens verwenden</label>
+          <label class="check"><input type="checkbox" id="collect-force"> Vorhandenes Ziel ergänzen beziehungsweise überschreiben</label>
+        </div>
+        <footer class="card-foot">
+          <button class="btn btn-primary" data-action="collect">Sammeln</button>
+          <button class="btn btn-danger-quiet" data-action="cancel" hidden>Abbrechen</button>
+          <div class="progress" id="collect-progress" hidden><div class="progress-bar"></div></div>
+          <span class="foot-note" id="collect-note"></span>
+        </footer>
+      </section>
+
+      <section class="card result" id="collect-result" hidden>
+        <header class="card-head"><h2>Zusammenfassung</h2></header>
+        <div class="card-body" id="collect-result-body"></div>
+      </section>
+
+    </div>
+
+    <aside class="column sidebar">
+      <section class="card">
+        <header class="card-head"><h2>Hinweise</h2></header>
+        <div class="card-body notes">
+          <p><b>Datum vor Archiv.</b> Es zählt das Datum in der Logdatei, nicht das des umgebenden ZIP.</p>
+          <p><b>Dubletten.</b> Byteidentische Dateien werden anhand ihres SHA-256 nur einmal übernommen; gleichnamige Dateien mit anderem Inhalt bekommen ein Suffix.</p>
+          <p><b>Manifest.</b> Neben dem Ergebnis entsteht eine <code>*.manifest.csv</code> mit Herkunft und Hash. Sie bleibt lokal und gehört nicht in die Weitergabe.</p>
+          <p><b>Archiv.</b> Das ZIP wird mit LZMA gepackt, 7-Zip ist dafür nicht mehr nötig.</p>
+          <p><b>Protokoll.</b> Jeder Lauf wird mitgeschrieben – bei einem Abbruch steht dort, was passiert ist:</p>
+          <p class="path" id="log-path">…</p>
+          <div class="card-actions card-actions-start">
+            <button class="btn btn-quiet" data-action="connection-test">Verbindung testen</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
+</section>
+
+<!-- ─────────────────────────── Anonymisieren ─────────────────────────── -->
+<section class="view" id="view-anonymize" hidden aria-labelledby="tab-anonymize">
+  <div class="layout">
+    <div class="column">
+
+      <section class="card">
+        <header class="card-head">
+          <div class="segmented segmented-inline" id="anon-mode" role="radiogroup" aria-label="Eingabeart">
+            <button role="radio" aria-checked="true" data-mode="text">Text</button>
+            <button role="radio" aria-checked="false" data-mode="files">Dateien</button>
+          </div>
+          <div class="card-actions">
+            <label class="check check-inline"><input type="checkbox" id="anon-restore"> Zurückwandeln</label>
+          </div>
+        </header>
+
+        <div class="card-body" id="anon-text-panel">
+          <div class="split">
+            <div class="split-pane">
+              <div class="pane-head">
+                <span>Original</span>
+                <div class="card-actions">
+                  <button class="btn btn-quiet" data-action="term-from-selection" disabled title="Erst im Original oder in der Vorschau Text markieren">Auswahl immer ersetzen</button>
+                  <button class="btn btn-quiet" data-action="clear-text">Leeren</button>
+                </div>
+              </div>
+              <textarea id="anon-input" spellcheck="false" placeholder="Logzeilen oder eine Mail hier einfügen. Die Vorschau rechts zeigt sofort, was ersetzt wird."></textarea>
+            </div>
+            <div class="split-pane">
+              <div class="pane-head">
+                <span id="anon-output-label">Anonymisiert</span>
+                <button class="btn btn-quiet" data-action="copy-result">Kopieren</button>
+              </div>
+              <div class="output" id="anon-output" aria-live="polite"></div>
+              <div class="mark-pop" id="mark-pop" role="dialog" aria-label="Ersetzung" hidden></div>
+            </div>
+          </div>
+          <div class="legend" id="anon-legend"></div>
+        </div>
+
+        <div class="card-body" id="anon-files-panel" hidden>
+          <div class="card-actions card-actions-start">
+            <button class="btn" data-action="anon-add-files">Dateien …</button>
+            <button class="btn" data-action="anon-add-folder">Ordner …</button>
+          </div>
+          <ul class="list" id="anon-files" aria-label="Ausgewählte Logdateien"></ul>
+          <p class="empty" id="anon-files-empty">Noch keine Datei gewählt. Die Originale werden nie verändert; daneben entsteht <code>name.anonym.log</code>.</p>
+          <div class="field">
+            <label for="anon-output-dir">Ausgabeordner</label>
+            <div class="input-row">
+              <input type="text" id="anon-output-dir" placeholder="leer = neben der Quelle" spellcheck="false">
+              <button class="btn" data-action="pick-output">Wählen …</button>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="anon-force"> Vorhandene Zieldateien überschreiben</label>
+        </div>
+
+        <footer class="card-foot">
+          <button class="btn btn-primary" data-action="anon-run">Anonymisieren</button>
+          <button class="btn btn-danger-quiet" data-action="anon-cancel" hidden>Abbrechen</button>
+          <div class="progress" id="anon-progress" hidden><div class="progress-bar"></div></div>
+          <span class="foot-note" id="anon-note"></span>
+        </footer>
+      </section>
+
+      <section class="card result" id="anon-result" hidden>
+        <header class="card-head"><h2>Zusammenfassung</h2></header>
+        <div class="card-body" id="anon-result-body"></div>
+      </section>
+    </div>
+
+    <aside class="column sidebar">
+
+      <section class="card" id="store-card">
+        <header class="card-head">
+          <h2>Zuordnungsstore</h2>
+          <span class="badge" id="store-badge">wird geladen</span>
+        </header>
+        <div class="card-body">
+          <p class="hint" id="store-summary">…</p>
+          <div class="counts" id="store-counts"></div>
+          <p class="path" id="store-path"></p>
+          <div class="card-actions card-actions-start">
+            <button class="btn" data-action="store-unlock" hidden>Entsperren …</button>
+            <button class="btn btn-quiet" data-action="store-check">Diagnose</button>
+            <button class="btn btn-quiet" data-action="store-export">Exportieren …</button>
+            <button class="btn btn-quiet" data-action="store-import">Importieren …</button>
+            <button class="btn btn-danger-quiet" data-action="store-reset">Zurücksetzen …</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card-head"><h2>Optionen</h2></header>
+        <div class="card-body">
+          <div class="field">
+            <span class="field-label">Verfahren</span>
+            <label class="radio"><input type="radio" name="anon-method" value="pseudonym" checked> Konsistente Platzhalter <span class="hint-inline">umkehrbar</span></label>
+            <label class="radio"><input type="radio" name="anon-method" value="redact"> Werte vollständig entfernen <span class="hint-inline">endgültig</span></label>
+          </div>
+          <label class="check"><input type="checkbox" id="opt-keep-private" > Private IP-Adressen beibehalten</label>
+          <label class="check"><input type="checkbox" id="opt-hostnames" checked> Hostnamen anonymisieren</label>
+          <label class="check"><input type="checkbox" id="opt-store" checked> Persönlichen Store verwenden</label>
+          <label class="check"><input type="checkbox" id="opt-personal" checked> Namen, Telefon und Anschriften erkennen</label>
+          <div class="field">
+            <label for="opt-keep-domains">Ausgenommene Domains</label>
+            <input type="text" id="opt-keep-domains" placeholder="example.com, intern.local" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="term-input">Eigene Begriffe <span class="hint-inline">immer ersetzen</span></label>
+            <div class="input-row">
+              <input type="text" id="term-input" placeholder="z. B. Kundenkürzel" spellcheck="false">
+              <button class="btn" data-action="term-add">Hinzufügen</button>
+            </div>
+            <ul class="chips" id="term-list" aria-label="Eigene Begriffe"></ul>
+            <p class="field-note">Groß- und Kleinschreibung egal. Für ein Muster <code>/…/</code> schreiben.</p>
+          </div>
+          <div class="field">
+            <span class="field-label">Nie ersetzen</span>
+            <ul class="chips" id="ignore-list" aria-label="Nie ersetzen"></ul>
+            <p class="field-note" id="ignore-note">In der Vorschau auf eine Ersetzung klicken, um sie hier aufzunehmen.</p>
+          </div>
+          <div class="field">
+            <label for="opt-encoding">Dateikodierung</label>
+            <select id="opt-encoding">
+              <option value="auto">automatisch</option>
+              <option value="ansi">ANSI (CP1252)</option>
+              <option value="utf8">UTF-8</option>
+              <option value="latin1">Latin-1</option>
+              <option value="ascii">ASCII</option>
+              <option value="unicode">UTF-16</option>
+            </select>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
+</section>
+
+</main>
+
+<!-- ───────────────────────────── Dialoge ───────────────────────────── -->
+<dialog id="browser">
+  <form method="dialog" class="dialog-form">
+    <header class="dialog-head">
+      <h2 id="browser-title">Auswählen</h2>
+      <button class="btn btn-quiet" value="cancel" formnovalidate>Schließen</button>
+    </header>
+    <div class="browser-body">
+      <nav class="places" id="browser-places" aria-label="Orte"></nav>
+      <div class="browser-main">
+        <div class="input-row">
+          <input type="text" id="browser-path" spellcheck="false" aria-label="Pfad">
+          <button class="btn" id="browser-go" type="button">Öffnen</button>
+        </div>
+        <ul class="list browser-list" id="browser-list" aria-label="Inhalt"></ul>
+        <div class="field" id="browser-name-field" hidden>
+          <label for="browser-name">Dateiname</label>
+          <input type="text" id="browser-name" spellcheck="false">
+        </div>
+      </div>
+    </div>
+    <footer class="dialog-foot">
+      <span class="foot-note" id="browser-note"></span>
+      <button class="btn" value="cancel" formnovalidate>Abbrechen</button>
+      <button class="btn btn-primary" id="browser-accept" type="button">Übernehmen</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="password">
+  <form method="dialog" class="dialog-form dialog-narrow">
+    <header class="dialog-head"><h2 id="password-title">Kennwort</h2></header>
+    <div class="dialog-body">
+      <p class="hint" id="password-hint">Mindestens zwölf Zeichen.</p>
+      <input type="password" id="password-value" autocomplete="off">
+      <p class="hint" id="password-error" hidden></p>
+    </div>
+    <footer class="dialog-foot">
+      <button class="btn" value="cancel" formnovalidate>Abbrechen</button>
+      <button class="btn btn-primary" id="password-accept" type="button">OK</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="report">
+  <form method="dialog" class="dialog-form">
+    <header class="dialog-head">
+      <h2 id="report-title">Store-Diagnose</h2>
+      <button class="btn btn-quiet" value="cancel" formnovalidate>Schließen</button>
+    </header>
+    <div class="dialog-body">
+      <p class="hint">Reine Prüfung, es wird nichts geschrieben. Bei einem Problem hilft diese Ausgabe beim Einordnen.</p>
+      <table class="report" id="report-table"></table>
+      <button class="btn" type="button" id="report-copy">Als Text kopieren</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirm">
+  <form method="dialog" class="dialog-form dialog-narrow">
+    <header class="dialog-head"><h2 id="confirm-title">Bestätigen</h2></header>
+    <div class="dialog-body"><p id="confirm-text"></p></div>
+    <footer class="dialog-foot">
+      <button class="btn" value="cancel" formnovalidate>Abbrechen</button>
+      <button class="btn btn-danger" id="confirm-accept" type="button">Fortfahren</button>
+    </footer>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
