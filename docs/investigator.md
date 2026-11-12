@@ -300,7 +300,7 @@ The export dialog builds a text from the chosen events and masks it:
 5. **Leak check.**
    - If an original value of the events is still readable as a whole, the export is **blocked**, and the preview marks the place in red.
    - The general check of LogMasque marks what still looks like personal data, or words such as `password`, in orange. Those places must be confirmed before release.
-   - A value on the never-replace list stays by the user's decision.
+   - A value on the never-replace list stays by the user's decision, and so does an address with a port (`198.51.100.20:51001`) when its address is on the list.
 6. **Release.**
    - Only after release can the text be copied or saved as a file.
    - With the store, new placeholders are saved so that an answer can be restored on the Anonymize tab.
@@ -383,13 +383,13 @@ Rules with a priority below 50 run before addresses and claim their text. Rules 
 - excluded and included values, and excluded links;
 - removing a file;
 - free-text search with combined filters, prefix search, levels, suggestions, and the fallback without FTS5;
-- the export: no original value and no file name in it; consistent placeholders; values hidden by their surroundings; blocking when a value remains; review of suspicious words; the never-replace list;
+- the export: no original value and no file name in it; consistent placeholders; values hidden by their surroundings; blocking when a value remains; review of suspicious words; the never-replace list, also for an address with a port;
 - 28,000 lines with time limits;
 - cancelling an import;
-- the quick scan, the import plan with priority and background files, and search while a large file is read;
-- per-file counts that add up to a full recount, after adding and removing files;
+- the quick scan with its groups, its cancelling and its names of log types; the import plan with priority and background files; search while a large file is read;
+- per-file counts that add up to a full recount, after adding and removing files and after a time change; a value that becomes frequent and ordinary again;
 - the context view from the original file, the byte reader against the text reader, and the fallback for changed files;
-- the import with helper processes: the same index as without them, also when helpers fail or cannot start, and after cancelling;
+- the import with helper processes: the same index as without them, also when a file fails in a helper, a helper is killed midway or helpers cannot start, and after cancelling;
 - earlier copies of growing logs: left out in the same import, replaced in the index with their settings and decisions, recognized at the same path after the log grew there, told apart from files that only begin alike, marked in the scan, and the same with helper processes;
 - the compressed event text: smaller than the text, intact after removing a file that shares its blocks, and readable next to the uncompressed text of earlier versions;
 - the conversion of investigations of the first version;

@@ -191,10 +191,14 @@ _CLOSING_PHRASE = (
     r"|(?:^|(?<=[\r\n.!?]))[ \t]*(?i:gr(?:ü|ue)(?:ß|ss)e|gru(?:ß|ss)|mfg|lg|vg|regards|cheers|saluti"
     r"|saludos|groeten|mvg)"
 )
+# After the closing the words of the name stand one blank apart: two blanks
+# were a line break before the text was flattened, and the next line is the
+# company or the street. The name ends with its word, not inside "GmbH".
+_NAME_TAIL_ONE_LINE = rf"(?:[ \t\u00a0](?:{_PARTICLE}[ \t\u00a0]){{0,2}}{NAME_WORD})"
 _CLOSING = re.compile(
     rf"(?m)(?:{_CLOSING_PHRASE})(?:[ \t]*/[ \t]*(?i:kind|best)[ \t]+regards)?[ \t]*[,.!]?"
     rf"(?:[ \t]*(?:-{{2,3}}|[—–])[ \t]*)?\s{{0,6}}"
-    rf"{_TITLE}(?P<v>{NAME_WORD}{_NAME_TAIL}{{0,3}})"
+    rf"{_TITLE}(?P<v>{NAME_WORD}{_NAME_TAIL_ONE_LINE}{{0,3}})(?![{U}](?![{L}]))"
 )
 _ROLE = re.compile(
     r"(?i:geschäftsführer(?:in)?|geschäftsführung|geschäftsführende[rn]?[ \t]+gesellschafter(?:in)?"
@@ -290,6 +294,9 @@ def learn(text: str) -> Findings:
             findings.add_name(words, "first")
     if _hinted(lowered, "closing"):
         for match in _CLOSING.finditer(text):
+            # "Mit freundlichen Grüßen Muster Software GmbH": a company signs, not a person.
+            if COMPANY.match(text, match.start("v")):
+                continue
             findings.add_name(clean_name(match.group("v")), "first")
     if _hinted(lowered, "role"):
         for match in _ROLE.finditer(text):

@@ -1833,7 +1833,7 @@ class Investigation:
             if item["kind"] not in SENSITIVE_KINDS or (item["generic"] and item["kind"] in ("account", "device", "host")):
                 continue
             for value in {item["value"], (item["display"] or "").strip("<>[]")}:
-                if len(value) >= 4 and not _OWN_OUTPUT.fullmatch(value) and not mapping.is_ignored(value):
+                if len(value) >= 4 and not _OWN_OUTPUT.fullmatch(value) and not _kept(item["kind"], value, mapping):
                     candidates.append((item["kind"], value))
         masked = _sweep(masked, candidates, engine)
         # Masking a neighbour can lay a value open that its surroundings hid
@@ -1908,8 +1908,18 @@ def _readable(text: str, mapping: Mapping) -> list[entities.Found]:
         found for found in entities.extract(text)
         if found.kind in SENSITIVE_KINDS
         and not _OWN_OUTPUT.search(found.value)
-        and not mapping.is_ignored(found.value) and not mapping.is_ignored(found.display or found.value)
+        and not _kept(found.kind, found.value, mapping) and not _kept(found.kind, found.display or found.value, mapping)
     ]
+
+
+def _kept(kind: str, value: str, mapping: Mapping) -> bool:
+    """A value on the never-replace list; an address with a port when its address is on it."""
+    if mapping.is_ignored(value):
+        return True
+    if kind == "endpoint" and ":" in value:
+        address = value.rsplit(":", 1)[0].strip("[]")
+        return mapping.is_ignored(address)
+    return False
 
 
 def _bounded(kind: str, value: str) -> re.Pattern:
