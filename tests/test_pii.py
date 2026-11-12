@@ -155,6 +155,83 @@ class SignatureTest(unittest.TestCase):
         self.assertIn("Geschäftsführer: [VORNAME-", output)
 
 
+class NameContextTest(unittest.TestCase):
+    """Where a name stands in a mail, and where a word only looks like one."""
+
+    def test_a_name_after_a_signature_delimiter(self):
+        output, _ = anonymize("Kind regards,--Tessa Fiktiv")
+        self.assertEqual(output, "Kind regards,--[PERSON-001]")
+
+    def test_a_display_name_followed_by_the_company(self):
+        output, _ = anonymize('"Marco Esempio from Beispiel Werke" <m.esempio@werke.example>')
+        self.assertNotIn("Marco", output)
+        self.assertNotIn("Esempio", output)
+        self.assertTrue(output.startswith('"[PERSON-001] from '), output)
+
+    def test_thanks_marks_a_first_name_in_several_languages(self):
+        for thanks in ("Thanks", "Thank you", "Danke", "Vielen Dank", "Merci", "Grazie", "Gracias", "Bedankt"):
+            output, _ = anonymize(f"{thanks} Tessa,\nthe log is attached.")
+            self.assertEqual(output, f"{thanks} [VORNAME-001],\nthe log is attached.", thanks)
+        output, _ = anonymize("Thanks again,\nthe log is attached.")
+        self.assertEqual(output, "Thanks again,\nthe log is attached.")
+
+    def test_labelled_numbers_are_phone_numbers(self):
+        labels = ("Toll-Free", "Local", "Direct", "Main", "Office", "Cell", "Hotline", "Switchboard")
+        numbers = ("0800 1234567", "+49 30 7654321", "030 1112223", "030 4445556", "030 7778889",
+                   "0170 1234567", "0800 5556667", "030 9990001")
+        text = " ".join(f"{label}: {number}" for label, number in zip(labels, numbers))
+        output, _ = anonymize(text)
+        self.assertEqual(output, " ".join(f"{label}: [TEL-{index:03d}]" for index, label in enumerate(labels, 1)))
+        # Without the colon the word is just a word; a date after a label stays a date.
+        self.assertEqual(anonymize("Local office 0800 1234567")[0], "Local office 0800 1234567")
+        self.assertEqual(anonymize("Local: 12.05.2026 Direct: 2026-05-12")[0], "Local: 12.05.2026 Direct: 2026-05-12")
+
+    def test_glued_sentences_with_numbers_and_capitals_are_no_domains(self):
+        text = "see Task 30927.Regards and this Feature.Mit freundlichen Grüßen"
+        self.assertEqual(anonymize(text)[0], text)
+
+    def test_a_company_after_a_former_line_break(self):
+        mapping = Mapping()
+        text = "Trainee  Muster GmbH"
+        output, engine = anonymize(text, mapping)
+        self.assertEqual(output, "Trainee  [FIRMA-001]")
+        self.assertEqual(mapping.find("Company", "Muster GmbH"), "Muster GmbH")
+        self.assertEqual(engine.restore_line(output), text)
+
+    def test_a_company_signing_after_the_closing_is_no_person(self):
+        for text in (
+            "Mit freundlichen Grüßen  Beispiel Werke GmbH  Hauptstraße 12",
+            "Mit freundlichen Grüßen\nBeispiel Werke GmbH\nHauptstraße 12",
+            "Best regards  Beispiel Werke GmbH",
+        ):
+            mapping = Mapping()
+            output, engine = anonymize(text, mapping)
+            self.assertNotIn("Beispiel", output, text)
+            self.assertNotIn("GmbH", output, text)
+            self.assertIn("[FIRMA-001]", output, text)
+            self.assertEqual(mapping.counts()["Person"], 0, text)
+            self.assertEqual("\n".join(engine.restore_line(line) for line in output.split("\n")), text)
+
+    def test_the_name_after_the_closing_ends_at_a_former_line_break(self):
+        mapping = Mapping()
+        text = "Mit freundlichen Grüßen  Tessa Fiktiv  Beispiel Werke GmbH  Hauptstraße 12"
+        output, engine = anonymize(text, mapping)
+        self.assertEqual(output, "Mit freundlichen Grüßen  [PERSON-001]  [FIRMA-001]  [STRASSE-001]")
+        self.assertEqual(mapping.find("Person", "Tessa Fiktiv"), "Tessa Fiktiv")
+        self.assertEqual(engine.restore_line(output), text)
+        # A capital glued to the name still starts the next word.
+        output, _ = anonymize("Mit freundlichen GrüßenTessa FiktivTeam Lead Support")
+        self.assertEqual(output, "Mit freundlichen Grüßen[PERSON-001]Team Lead Support")
+
+    def test_a_label_learned_as_a_name_stays_restorable_but_is_not_replaced(self):
+        mapping = Mapping()
+        token = mapping.person_token("Local", "surname")
+        output, engine = anonymize("Local: +49 30 7654321 and the Local office", mapping)
+        self.assertEqual(output, "Local: [TEL-001] and the Local office")
+        self.assertEqual(engine.restore_line(f"old {token}"), "old Local")
+        self.assertEqual(mapping.find("Person", "Local"), "Local")
+
+
 class OwnListsTest(unittest.TestCase):
     def test_own_term_is_plain_text_and_case_insensitive(self):
         mapping = Mapping()

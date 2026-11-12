@@ -28,7 +28,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import __version__, applog
+from . import __version__, applog, investigate
 from .anonymize import CATEGORY_LABELS, Anonymizer, Cancelled, Options, default_output_path
 from .collect import collect, find_seven_zip, scan
 from .lognames import DEFAULT_EXTENSIONS
@@ -65,6 +65,8 @@ class Job:
     result: dict = field(default_factory=dict)
     error: str = ""
     cancel: bool = False
+    # What a long run reports while it runs, such as the phase of an import.
+    detail: dict = field(default_factory=dict)
 
     def snapshot(self) -> dict:
         data = asdict(self)
@@ -127,6 +129,11 @@ class AppState:
         self.inventory_key: tuple | None = None
         self.inventory = None
         self.selections: dict[str, list[tuple[str, str]]] = {}
+        self.investigation: investigate.Investigation | None = None
+        # One object per open investigation, shared by requests and imports,
+        # and the import job running for it, if any.
+        self.investigations: dict[str, investigate.Investigation] = {}
+        self.inv_jobs: dict[str, str] = {}
 
 
 def _options_from(payload: dict) -> Options:
@@ -633,6 +640,237 @@ class Api:
             "total": len(rows),
         }
 
+    # -- investigate ------------------------------------------------------
+
+    def _inv_folder(self) -> Path:
+        return investigate.investigations_folder(self.state.store_path)
+
+    def _inv(self) -> investigate.Investigation:
+        if self.state.investigation is None:
+            raise investigate.InvestigationError("Keine Untersuchung geöffnet. Lege eine an oder öffne eine vorhandene.")
+        return self.state.investigation
+
+    def _inv_object(self, path: Path) -> investigate.Investigation:
+        investigation = self.state.investigations.get(path.stem)
+        if investigation is None:
+            investigation = self.state.investigations[path.stem] = investigate.Investigation(path)
+        return investigation
+
+    def _inv_job(self, investigation_id: str) -> str | None:
+        """The import running for an investigation, if any."""
+        job_id = self.state.inv_jobs.get(investigation_id)
+        job = self.state.jobs.get(job_id) if job_id else None
+        if job is None or job.status != "running":
+            self.state.inv_jobs.pop(investigation_id, None)
+            return None
+        return job_id
+
+    def _inv_idle(self, investigation: investigate.Investigation) -> None:
+        if self._inv_job(investigation.id):
+            raise investigate.InvestigationError(
+                "Während des Imports nicht möglich. Bitte warten, bis er fertig ist, oder ihn abbrechen."
+            )
+
+    def _inv_overview(self, investigation: investigate.Investigation) -> dict:
+        overview = investigation.overview()
+        overview["importJob"] = self._inv_job(investigation.id)
+        return overview
+
+    def inv_list(self, payload: dict) -> dict:
+        current = self.state.investigation
+        return {
+            "items": investigate.list_investigations(self._inv_folder()),
+            "current": current.id if current else None,
+            "folder": str(self._inv_folder()),
+        }
+
+    def inv_create(self, payload: dict) -> dict:
+        created = investigate.create_investigation(self._inv_folder(), str(payload.get("name") or ""))
+        self.state.investigation = self.state.investigations[created.id] = created
+        applog.get().info("investigation created: %s", created.path)
+        return self._inv_overview(created)
+
+    def inv_open(self, payload: dict) -> dict:
+        path = investigate.investigation_path(self._inv_folder(), str(payload.get("id") or ""))
+        self.state.investigation = self._inv_object(path)
+        return self._inv_overview(self.state.investigation)
+
+    def inv_delete(self, payload: dict) -> dict:
+        target = str(payload.get("id") or "")
+        if self._inv_job(target):
+            raise investigate.InvestigationError("Diese Untersuchung importiert gerade. Bitte zuerst den Import abbrechen.")
+        if self.state.investigation is not None and self.state.investigation.id == target:
+            self.state.investigation = None
+        self.state.investigations.pop(target, None)
+        investigate.delete_investigation(self._inv_folder(), target)
+        applog.get().info("investigation deleted: %s", target)
+        return self.inv_list({})
+
+    def inv_overview(self, payload: dict) -> dict:
+        return self._inv_overview(self._inv())
+
+    def inv_scan(self, payload: dict) -> dict:
+        """Head and tail of every file: log types, sizes and time ranges before anything is indexed."""
+        paths = [str(item) for item in payload.get("paths") or [] if str(item).strip()]
+        if not paths:
+            raise ValueError("Zuerst Dateien oder einen Ordner wählen.")
+        investigation = self._inv()
+
+        def worker(job: Job) -> dict:
+            def progress(value: float, name: str = "") -> None:
+                job.progress = value
+                job.message = name
+
+            return {"scan": investigation.scan_paths(paths, progress=progress, cancelled=lambda: job.cancel)}
+
+        return {"job": self.state.jobs.start("scan-logs", worker).id}
+
+    def inv_import(self, payload: dict) -> dict:
+        """Priority files first, then the background ones; both lists hold files or folders."""
+        priority = [str(item) for item in payload.get("priority") or payload.get("paths") or [] if str(item).strip()]
+        background = [str(item) for item in payload.get("background") or [] if str(item).strip()]
+        if not priority and not background:
+            raise ValueError("Zuerst Dateien oder einen Ordner wählen.")
+        investigation = self._inv()
+        self._inv_idle(investigation)
+
+        def worker(job: Job) -> dict:
+            def progress(value: float, name: str = "") -> None:
+                job.progress = value
+                job.message = name
+
+            def status(detail: dict) -> None:
+                job.detail.update(detail)
+
+            def ready() -> None:
+                job.detail["ready"] = True
+                applog.get().info("investigation import: priority files ready")
+
+            applog.get().info(
+                "investigation import of %d priority and %d background path(s)", len(priority), len(background)
+            )
+            report = investigation.import_plan(
+                priority, background, progress=progress, cancelled=lambda: job.cancel, status=status, ready=ready
+            )
+            readers = report.get("readers") or {}
+            if readers.get("fallback"):
+                applog.get().warning("import helpers gave up, read in this process: %s", readers["fallback"])
+            elif readers:
+                applog.get().info("investigation import with %d helper process(es)", readers["count"])
+            if report["continued"] or report["replaced"]:
+                applog.get().info(
+                    "investigation import: %d earlier copy(ies) left out, %d imported copy(ies) replaced",
+                    len(report["continued"]), len(report["replaced"]),
+                )
+            for failed in report["failed"]:
+                applog.get().warning("import failed: %s (%s)", failed["path"], failed["error"])
+            return {"report": report, "overview": investigation.overview()}
+
+        job = self.state.jobs.start("investigate", worker)
+        self.state.inv_jobs[investigation.id] = job.id
+        return {"job": job.id}
+
+    def inv_time(self, payload: dict) -> dict:
+        """Recomputing every time can take a while on large investigations, so it runs as a job."""
+        investigation = self._inv()
+        self._inv_idle(investigation)
+        source = payload.get("sourceId")
+        offset = payload.get("offset")
+        arguments = (
+            int(source) if source not in (None, "") else None,
+            str(payload.get("mode") or "auto"),
+            int(offset) if offset not in (None, "") else None,
+            float(payload.get("skewSeconds") or 0),
+        )
+        if arguments[1] not in ("auto", "local", "fixed"):
+            raise investigate.InvestigationError("Unbekannte Zeiteinstellung.")
+
+        def worker(job: Job) -> dict:
+            job.message = "Zeiten werden neu berechnet …"
+            investigation.set_time(*arguments)
+            return {"overview": investigation.overview()}
+
+        job = self.state.jobs.start("investigate-time", worker)
+        self.state.inv_jobs[investigation.id] = job.id
+        return {"job": job.id}
+
+    def inv_remove_source(self, payload: dict) -> dict:
+        investigation = self._inv()
+        self._inv_idle(investigation)
+        investigation.remove_source(int(payload.get("sourceId")))
+        return self._inv_overview(investigation)
+
+    def inv_suggest(self, payload: dict) -> dict:
+        return {"items": self._inv().suggest(str(payload.get("query") or ""))}
+
+    def inv_search(self, payload: dict) -> dict:
+        def number(key):
+            value = payload.get(key)
+            return int(value) if value not in (None, "") else None
+
+        return self._inv().search(
+            query=str(payload.get("query") or ""),
+            entity_ids=[int(item) for item in payload.get("entities") or []],
+            sources=[int(item) for item in payload.get("sources") or []],
+            etypes=[str(item) for item in payload.get("etypes") or []],
+            min_severity=int(payload.get("minSeverity", 1)),
+            time_from=number("from"),
+            time_to=number("to"),
+            levels=[int(item) for item in payload.get("levels") or []] or None,
+            temporal_seconds=int(payload.get("temporalSeconds") or 0),
+            limit=int(payload.get("limit", 200)),
+            offset=int(payload.get("offset", 0)),
+            ids_only=bool(payload.get("idsOnly", False)),
+        )
+
+    def inv_event(self, payload: dict) -> dict:
+        return self._inv().event_detail(
+            int(payload.get("id")), anchor_ids=[int(item) for item in payload.get("anchors") or []] or None
+        )
+
+    def inv_context(self, payload: dict) -> dict:
+        return {"rows": self._inv().context_events(int(payload.get("id")))}
+
+    def inv_entity(self, payload: dict) -> dict:
+        return self._inv().entity_detail(int(payload.get("id")))
+
+    def inv_graph(self, payload: dict) -> dict:
+        return self._inv().graph(int(payload.get("id")), [str(item) for item in payload.get("kinds") or []] or None)
+
+    def inv_flag(self, payload: dict) -> dict:
+        return self._inv().flag_entity(int(payload.get("id")), str(payload.get("action") or "reset"))
+
+    def inv_link(self, payload: dict) -> dict:
+        self._inv().exclude_link(int(payload.get("a")), int(payload.get("b")), bool(payload.get("undo", False)))
+        return {"ok": True}
+
+    def inv_export(self, payload: dict) -> dict:
+        """Masked events for an outside analysis: a preview first, then the release.
+
+        The preview never touches the store. The release uses the same mapping,
+        saves new placeholders to the store so they can be restored later, and
+        refuses while original values are readable or the review is not confirmed.
+        """
+        events = [int(item) for item in payload.get("events") or []]
+        use_store = bool(payload.get("useStore", True))
+        confirm = bool(payload.get("confirm", False))
+        investigation = self._inv()
+        if confirm:
+            _check_store_writable(self.state, use_store, False, Options())
+        mapping = _load_mapping(self.state, use_store)
+        result = investigation.export_text(events, mapping if confirm else copy.deepcopy(mapping))
+        result["reversible"] = use_store
+        if not confirm:
+            return result
+        if result["blocked"]:
+            raise ValueError("Export gesperrt: Im Ergebnis stehen noch Originalwerte. Siehe Vorschau.")
+        if result["needsReview"] and not payload.get("reviewed"):
+            raise ValueError("Bitte zuerst bestätigen, dass die markierten Stellen geprüft wurden.")
+        if use_store:
+            save_mapping(self.state.store_path, mapping, self.state.store_password)
+        applog.get().info("investigation export released: %d events", result["events"])
+        return result
+
 
 def _lists_of(mapping: Mapping) -> dict:
     return {
@@ -690,6 +928,24 @@ ROUTES = {
     "/api/store/rows": "store_rows",
     "/api/lists": "lists",
     "/api/lists/change": "lists_change",
+    "/api/inv/list": "inv_list",
+    "/api/inv/create": "inv_create",
+    "/api/inv/open": "inv_open",
+    "/api/inv/delete": "inv_delete",
+    "/api/inv/overview": "inv_overview",
+    "/api/inv/import": "inv_import",
+    "/api/inv/scan": "inv_scan",
+    "/api/inv/time": "inv_time",
+    "/api/inv/source/remove": "inv_remove_source",
+    "/api/inv/suggest": "inv_suggest",
+    "/api/inv/search": "inv_search",
+    "/api/inv/event": "inv_event",
+    "/api/inv/context": "inv_context",
+    "/api/inv/entity": "inv_entity",
+    "/api/inv/graph": "inv_graph",
+    "/api/inv/flag": "inv_flag",
+    "/api/inv/link": "inv_link",
+    "/api/inv/export": "inv_export",
 }
 
 

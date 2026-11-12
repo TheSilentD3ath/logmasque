@@ -81,6 +81,44 @@ class Replacement(unittest.TestCase):
             self.assertFalse(is_private_ipv4(address), address)
 
 
+class Surroundings(unittest.TestCase):
+    """What stands next to a value must not change its placeholder or hide it."""
+
+    def test_a_mail_address_keeps_its_placeholder_whatever_stands_before_it(self):
+        engine = Anonymizer(Mapping(), Options())
+        lines = [
+            "QS:Cmd=Sync&User=alpha@firma.example&DeviceId=X",
+            "from 'alpha@firma.example'",
+            "WARNING|alpha@firma.example|login",
+            r"c:\mdaemon\users\alpha@firma.example",
+            "To: <alpha@firma.example>",
+        ]
+        for line in lines:
+            output = engine.process_line(line)
+            self.assertIn("user001@kunde001.tld", output, line)
+            self.assertNotIn("alpha", output, line)
+        self.assertIn("QS:Cmd=Sync&User=user001@kunde001.tld&DeviceId=X", engine.process_line(lines[0]))
+
+    def test_an_address_at_the_end_of_a_sentence(self):
+        self.assertEqual(run("Connection from 203.0.113.7."), "Connection from [IPv4-001].")
+        self.assertEqual(run("Connection from 203.0.113.7. Next"), "Connection from [IPv4-001]. Next")
+
+    def test_web_file_names_are_no_domains(self):
+        line = "GET /favicon.ico /js/app.min.php /site.webmanifest.map via mail.firma.example"
+        self.assertEqual(run(line), "GET /favicon.ico /js/app.min.php /site.webmanifest.map via host001.kunde001.tld")
+
+    def test_an_own_term_inside_a_mail_address_or_a_domain(self):
+        mapping = Mapping()
+        mapping.add_term("nordlicht")
+        engine = Anonymizer(mapping, Options())
+        output = engine.process_line("nordlicht@beispiel.example, info@nordlicht.example, www.nordlicht.example, Nordlicht")
+        self.assertNotIn("nordlicht", output.lower())
+        self.assertNotIn("beispiel", output)
+        self.assertEqual(
+            output, "user001@kunde001.tld, user002@kunde002.tld, host001.kunde002.tld, [WERT-001]"
+        )
+
+
 class Restore(unittest.TestCase):
     def test_round_trip(self):
         mapping = Mapping()

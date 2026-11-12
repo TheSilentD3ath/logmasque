@@ -78,7 +78,7 @@ const STORE_LABELS = {
 const state = {
   info: null,
   collect: { sources: [], matrix: null, selection: new Set(), mode: "folder", job: null },
-  anon: { mode: "text", files: [], job: null, lastResult: "" },
+  anon: { mode: "text", files: [], job: null, lastResult: "", resultFor: null, resultCounts: null },
   lists: { terms: [], patterns: [], ignored: [], available: false },
 };
 
@@ -119,8 +119,13 @@ function showView(name) {
   }
   $("view-collect").hidden = name !== "collect";
   $("view-anonymize").hidden = name !== "anonymize";
-  $("toolbar-sub").textContent =
-    name === "collect" ? "Logs nach Tag und Logart sammeln" : "Werte ersetzen, bevor etwas das Haus verlässt";
+  $("view-investigate").hidden = name !== "investigate";
+  $("toolbar-sub").textContent = {
+    collect: "Logs nach Tag und Logart sammeln",
+    anonymize: "Werte ersetzen, bevor etwas das Haus verlässt",
+    investigate: "Logs durchsuchen, Zusammenhänge finden",
+  }[name];
+  document.dispatchEvent(new CustomEvent("viewchange", { detail: name }));
 }
 
 /* ── Dialogs ────────────────────────────────────────────────────────── */
@@ -674,25 +679,65 @@ function anonOptions() {
   };
 }
 
+// The server takes requests up to 8 MB (MAX_BODY in server.py); the options need a little of that.
+const ANON_TEXT_LIMIT = 8 * 1024 * 1024 - 64 * 1024;
+// The live preview shows this many lines; "Anonymisieren" always takes the whole text.
+const ANON_PREVIEW_LINES = 200;
+const anonNumber = (value) => value.toLocaleString("de-DE");
+// What the text takes in a request: umlauts take two bytes, quotes and backslashes an escape.
+const anonTextBytes = (text) => new Blob([JSON.stringify(text)]).size;
+// Lines as an editor counts them: a final line break opens no line of its own.
+const anonLineCount = (text) => text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+
 let previewTimer = null;
 function schedulePreview() {
+  // Whatever changed, the last result no longer belongs to what is shown.
+  state.anon.lastResult = "";
+  state.anon.resultFor = null;
+  state.anon.resultCounts = null;
   clearTimeout(previewTimer);
-  previewTimer = setTimeout(renderPreview, 220);
+  previewTimer = setTimeout(renderPreview, $("anon-input").value.length > 200000 ? 800 : 220);
+}
+
+function renderInputMeter(text, bytes) {
+  const meter = $("anon-input-meter");
+  const over = bytes > ANON_TEXT_LIMIT;
+  meter.classList.toggle("over", over);
+  if (!text) {
+    meter.textContent = `Bis etwa ${anonNumber(ANON_TEXT_LIMIT)} Zeichen; größere Logs unter „Dateien“.`;
+    return;
+  }
+  const lines = anonLineCount(text);
+  meter.textContent = over
+    ? `${anonNumber(text.length)} Zeichen: zu groß für die Texteingabe (höchstens ${formatBytes(ANON_TEXT_LIMIT)}). Größere Logs unter „Dateien“ anonymisieren.`
+    : `${anonNumber(lines)} ${lines === 1 ? "Zeile" : "Zeilen"} · ${anonNumber(text.length)} Zeichen · ` +
+      `Platz für noch etwa ${anonNumber(ANON_TEXT_LIMIT - bytes)} Zeichen`;
+  meter.title = "Umlaute, Anführungszeichen und Backslashes zählen doppelt.";
 }
 
 async function renderPreview() {
   const text = $("anon-input").value;
   const output = $("anon-output");
+  const note = $("anon-output-note");
   $("anon-output-label").textContent = $("anon-restore").checked ? "Zurückgewandelt" : "Anonymisiert";
+  const bytes = text ? anonTextBytes(text) : 0;
+  renderInputMeter(text, bytes);
+  note.hidden = true;
   if (!text.trim()) {
     output.innerHTML = "";
     output.append(el("span", "placeholder", "Die Vorschau erscheint, sobald links Text steht. Der Store wird dabei nicht verändert."));
     $("anon-legend").innerHTML = "";
     return;
   }
+  if (bytes > ANON_TEXT_LIMIT) {
+    output.innerHTML = "";
+    output.append(el("span", "error-line", "Zu groß für die Texteingabe. Unter „Dateien“ lassen sich Logs jeder Größe anonymisieren."));
+    $("anon-legend").innerHTML = "";
+    return;
+  }
   let data;
   try {
-    data = await api("/api/preview", Object.assign(anonOptions(), { text, limit: 200 }));
+    data = await api("/api/preview", Object.assign(anonOptions(), { text, limit: ANON_PREVIEW_LINES }));
   } catch (error) {
     output.innerHTML = "";
     output.append(el("span", "error-line", error.message));
@@ -717,7 +762,20 @@ async function renderPreview() {
     }
     output.append(line);
   }
-  renderLegend(data.stats, data.restored, data.unresolved);
+  if (data.truncated) {
+    const total = anonNumber(anonLineCount(text));
+    if (state.anon.resultFor === text) {
+      // After "Anonymisieren" the whole result is shown; marks only where the preview reaches.
+      output.append(el("span", "line", state.anon.lastResult.split("\n").slice(data.lines.length).join("\n")));
+      note.textContent = `Vollständiges Ergebnis, ${total} Zeilen; Ersetzungen markiert in den ersten ${data.lines.length}.`;
+    } else {
+      note.textContent = `Vorschau der ersten ${data.lines.length} von ${total} Zeilen. „Anonymisieren“ verarbeitet den ganzen Text und zeigt ihn dann hier vollständig.`;
+    }
+    note.hidden = false;
+  }
+  // The legend counts what the pane shows: after "Anonymisieren" the whole text.
+  const counts = state.anon.resultFor === text ? state.anon.resultCounts : data;
+  renderLegend(counts.stats, counts.restored, counts.unresolved);
 }
 
 function renderLegend(stats, restored, unresolved) {
@@ -882,9 +940,12 @@ async function runAnonymize() {
   if (state.anon.mode === "text") {
     const text = $("anon-input").value;
     if (!text.trim()) return setStatus("Zuerst Text einfügen", "error");
+    if (anonTextBytes(text) > ANON_TEXT_LIMIT) return setStatus("Zu groß für die Texteingabe – unter „Dateien“ anonymisieren", "error");
     setStatus("Wird verarbeitet …", "busy");
     const data = await api("/api/anonymize/text", Object.assign(options, { text }));
     state.anon.lastResult = data.text;
+    state.anon.resultFor = text;
+    state.anon.resultCounts = data;
     await renderPreview();
     showAnonResult(data, null);
     setStatus(options.restore ? "Zurückgewandelt" : "Anonymisiert", null);
@@ -1122,7 +1183,9 @@ const actions = {
     schedulePreview();
   },
   "copy-result": async () => {
-    const text = state.anon.lastResult || $("anon-output").textContent;
+    // Only the result of "Anonymisieren" is complete and has its placeholders in the store.
+    if (state.anon.resultFor !== $("anon-input").value) return runAnonymize();
+    const text = state.anon.lastResult;
     try {
       await navigator.clipboard.writeText(text);
       $("anon-note").textContent = "Ergebnis in der Zwischenablage.";

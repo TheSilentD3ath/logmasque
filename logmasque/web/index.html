@@ -20,6 +20,7 @@
   <div class="segmented" role="tablist" aria-label="Werkzeug">
     <button role="tab" id="tab-collect" aria-selected="true" data-view="collect">Sammeln</button>
     <button role="tab" id="tab-anonymize" aria-selected="false" data-view="anonymize">Anonymisieren</button>
+    <button role="tab" id="tab-investigate" aria-selected="false" data-view="investigate">Untersuchen</button>
   </div>
 
   <div class="toolbar-status" id="toolbar-status" aria-live="polite"></div>
@@ -153,6 +154,7 @@
                 </div>
               </div>
               <textarea id="anon-input" spellcheck="false" placeholder="Logzeilen oder eine Mail hier einfügen. Die Vorschau rechts zeigt sofort, was ersetzt wird."></textarea>
+              <p class="pane-note" id="anon-input-meter" aria-live="polite"></p>
             </div>
             <div class="split-pane">
               <div class="pane-head">
@@ -160,6 +162,7 @@
                 <button class="btn btn-quiet" data-action="copy-result">Kopieren</button>
               </div>
               <div class="output" id="anon-output" aria-live="polite"></div>
+              <p class="pane-note" id="anon-output-note" hidden></p>
               <div class="mark-pop" id="mark-pop" role="dialog" aria-label="Ersetzung" hidden></div>
             </div>
           </div>
@@ -265,6 +268,168 @@
   </div>
 </section>
 
+<!-- ──────────────────────────── Untersuchen ──────────────────────────── -->
+<section class="view" id="view-investigate" hidden aria-labelledby="tab-investigate">
+  <div class="inv">
+
+    <section class="card">
+      <header class="card-head">
+        <h2>Untersuchung</h2>
+        <select id="inv-select" class="inv-select" aria-label="Untersuchung wählen"></select>
+        <div class="card-actions">
+          <button class="btn" data-action="inv-new">Neu …</button>
+          <button class="btn btn-danger-quiet" data-action="inv-delete" disabled>Löschen …</button>
+        </div>
+      </header>
+      <div class="card-body" id="inv-intro">
+        <p class="empty">Eine Untersuchung ist ein lokaler Index über beliebig viele Logdateien: durchsuchbar, nach Zeit geordnet und mit den Verbindungen zwischen Adressen, Konten, Nachrichten und Sitzungen. Die Logdateien selbst werden nur gelesen, nie verändert. Der Index bleibt auf diesem Rechner neben dem Zuordnungsstore.</p>
+      </div>
+      <div class="card-body" id="inv-overview" hidden>
+        <div class="inv-summary" id="inv-summary"></div>
+        <details class="inv-sources-details" id="inv-sources-details">
+          <summary>Logdateien, Zeitzonen und Uhrkorrektur</summary>
+          <div class="inv-tz-default">
+            <label for="inv-default-tz">Zeilen ohne Zeitzone</label>
+            <select id="inv-default-tz">
+              <option value="auto">automatisch (Zeitzone anderer Logs, sonst dieser Rechner)</option>
+              <option value="local">Zeitzone dieses Rechners</option>
+              <option value="fixed">feste Abweichung von UTC</option>
+            </select>
+            <input type="text" id="inv-default-offset" class="inv-offset" placeholder="+02:00" spellcheck="false" aria-label="Abweichung von UTC">
+            <button class="btn" data-action="inv-default-tz">Übernehmen</button>
+          </div>
+          <div class="inv-table-wrap"><table class="inv-sources" id="inv-sources"></table></div>
+        </details>
+      </div>
+      <div class="card-body inv-run" id="inv-run" hidden aria-live="polite">
+        <div class="inv-run-line">
+          <span class="badge" id="inv-run-phase"></span>
+          <span id="inv-run-text"></span>
+        </div>
+        <p class="hint" id="inv-run-hint"></p>
+      </div>
+      <div class="card-body inv-scan" id="inv-scan" hidden>
+        <div class="inv-scan-head">
+          <h3>Was soll importiert werden?</h3>
+          <span class="hint" id="inv-scan-total"></span>
+          <button class="btn btn-quiet" data-action="inv-scan-close">Verwerfen</button>
+        </div>
+        <p class="hint" id="inv-scan-hint"></p>
+        <div class="inv-scan-window">
+          <label class="check check-inline"><input type="checkbox" id="inv-scan-window"> Nur Dateien im Zeitraum</label>
+          <input type="datetime-local" step="1" id="inv-scan-from" aria-label="Zeitraum von">
+          <span>bis</span>
+          <input type="datetime-local" step="1" id="inv-scan-to" aria-label="Zeitraum bis">
+          <select id="inv-scan-outside" aria-label="Dateien außerhalb des Zeitraums">
+            <option value="skip">übrige auslassen</option>
+            <option value="background">übrige im Hintergrund</option>
+          </select>
+        </div>
+        <div class="inv-table-wrap"><table class="inv-sources inv-scan-table" id="inv-scan-table"></table></div>
+        <div class="inv-scan-foot">
+          <span class="inv-scan-summary" id="inv-scan-summary"></span>
+          <button class="btn btn-primary" data-action="inv-import-start">Import starten</button>
+        </div>
+      </div>
+      <footer class="card-foot">
+        <button class="btn" data-action="inv-add-files" disabled>Logs hinzufügen …</button>
+        <button class="btn" data-action="inv-add-folder" disabled>Ordner hinzufügen …</button>
+        <button class="btn btn-danger-quiet" data-action="inv-cancel" hidden>Abbrechen</button>
+        <div class="progress" id="inv-progress" hidden><div class="progress-bar"></div></div>
+        <span class="foot-note" id="inv-note"></span>
+      </footer>
+    </section>
+
+    <section class="card" id="inv-search-card" hidden>
+      <div class="card-body">
+        <div class="inv-searchbar">
+          <div class="inv-query-wrap">
+            <input type="search" id="inv-query" autocomplete="off" spellcheck="false"
+                   placeholder="IP, E-Mail-Adresse, Konto, Message-ID, Queue-Datei, Gerät … oder beliebiger Text"
+                   role="combobox" aria-expanded="false" aria-controls="inv-suggest" aria-autocomplete="list">
+            <ul class="inv-suggest" id="inv-suggest" role="listbox" aria-label="Bekannte Werte" hidden></ul>
+          </div>
+          <button class="btn btn-primary" data-action="inv-search">Suchen</button>
+        </div>
+        <ul class="chips" id="inv-anchors" aria-label="Gesuchte Werte"></ul>
+        <div class="inv-filters">
+          <label class="inv-filter">Von <input type="datetime-local" step="1" id="inv-from"></label>
+          <label class="inv-filter">Bis <input type="datetime-local" step="1" id="inv-to"></label>
+          <details class="dropdown" id="inv-filter-sources">
+            <summary>Logs: alle</summary>
+            <div class="dropdown-body"></div>
+          </details>
+          <details class="dropdown" id="inv-filter-etypes">
+            <summary>Ereignisarten: alle</summary>
+            <div class="dropdown-body"></div>
+          </details>
+          <label class="check check-inline"><input type="checkbox" id="inv-details"> Detailzeilen</label>
+          <span class="inv-levels" id="inv-levels" hidden>
+            <label class="check check-inline"><input type="checkbox" data-level="1" checked> direkt</label>
+            <label class="check check-inline"><input type="checkbox" data-level="2" checked> stark</label>
+            <label class="check check-inline"><input type="checkbox" data-level="3"> möglich</label>
+            <select id="inv-temporal" aria-label="Nur zeitliche Nähe">
+              <option value="0">ohne reine Zeitnähe</option>
+              <option value="5">+ Zeitnähe ±5 s</option>
+              <option value="30">+ Zeitnähe ±30 s</option>
+              <option value="120">+ Zeitnähe ±2 min</option>
+            </select>
+          </span>
+          <button class="btn btn-quiet" data-action="inv-reset-filters">Filter zurücksetzen</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="inv-main" id="inv-main" hidden>
+      <section class="card inv-timeline">
+        <header class="card-head">
+          <h2 id="inv-result-title">Zeitleiste</h2>
+          <span class="inv-result-note" id="inv-result-note"></span>
+          <button class="btn btn-quiet" data-action="inv-refresh" id="inv-refresh" hidden title="Seit der letzten Suche sind Dateien dazugekommen">Neue Daten – aktualisieren</button>
+          <div class="card-actions">
+            <button class="btn btn-quiet" data-action="inv-select-all" title="Alle Treffer der aktuellen Suche für den Export wählen (höchstens 5000)">Alle wählen</button>
+            <button class="btn btn-quiet" data-action="inv-select-none">Keine</button>
+            <button class="btn" data-action="inv-export" disabled>Für KI exportieren …</button>
+          </div>
+        </header>
+        <div class="inv-banner" id="inv-banner" hidden></div>
+        <div class="inv-histogram" id="inv-histogram" aria-label="Ereignisse über die Zeit"></div>
+        <div class="inv-rows" id="inv-rows" role="list"></div>
+        <p class="empty inv-rows-empty" id="inv-rows-empty">Suche nach einem Wert oder Text. Ohne Suchbegriff zeigt die Zeitleiste alle Ereignisse in den gewählten Filtern.</p>
+        <footer class="card-foot">
+          <button class="btn" data-action="inv-prev" disabled>‹ Zurück</button>
+          <button class="btn" data-action="inv-next" disabled>Weiter ›</button>
+          <span class="foot-note" id="inv-page-note"></span>
+        </footer>
+      </section>
+
+      <aside class="card inv-side">
+        <header class="card-head">
+          <div class="segmented segmented-inline" id="inv-side-tabs" role="tablist" aria-label="Ansicht">
+            <button role="tab" aria-selected="true" data-side="event">Ereignis</button>
+            <button role="tab" aria-selected="false" data-side="entity">Entität</button>
+            <button role="tab" aria-selected="false" data-side="graph">Graph</button>
+          </div>
+        </header>
+        <div class="card-body inv-side-body" id="inv-side-event">
+          <p class="empty">Ein Ereignis in der Zeitleiste anklicken: hier erscheinen Originalzeilen mit Umgebung, die erkannten Werte und warum es zur Suche gehört.</p>
+        </div>
+        <div class="card-body inv-side-body" id="inv-side-entity" hidden>
+          <p class="empty">Einen erkannten Wert anklicken, um alle Vorkommen, Logs, erste und letzte Sichtung und die verbundenen Werte zu sehen.</p>
+        </div>
+        <div class="inv-side-body inv-graph-panel" id="inv-side-graph" hidden>
+          <div class="inv-graph-kinds" id="inv-graph-kinds"></div>
+          <div class="inv-graph" id="inv-graph">
+            <p class="empty">Einen Wert wählen, um seine Beziehungen zu sehen.</p>
+          </div>
+          <div class="inv-graph-info" id="inv-graph-info"></div>
+        </div>
+      </aside>
+    </div>
+
+  </div>
+</section>
+
 </main>
 
 <!-- ───────────────────────────── Dialoge ───────────────────────────── -->
@@ -336,6 +501,43 @@
   </form>
 </dialog>
 
+<dialog id="prompt">
+  <form method="dialog" class="dialog-form dialog-narrow">
+    <header class="dialog-head"><h2 id="prompt-title">Name</h2></header>
+    <div class="dialog-body">
+      <p class="hint" id="prompt-hint"></p>
+      <input type="text" id="prompt-value" autocomplete="off" spellcheck="false">
+    </div>
+    <footer class="dialog-foot">
+      <button class="btn" value="cancel" formnovalidate>Abbrechen</button>
+      <button class="btn btn-primary" id="prompt-accept" type="button">OK</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="inv-export-dialog" class="wide">
+  <form method="dialog" class="dialog-form">
+    <header class="dialog-head">
+      <h2>Export für eine externe Analyse</h2>
+      <button class="btn btn-quiet" value="cancel" formnovalidate>Schließen</button>
+    </header>
+    <div class="dialog-body">
+      <p class="hint">Die gewählten Ereignisse werden mit denselben Platzhaltern wie beim Anonymisieren maskiert; Dateinamen werden durch Q1, Q2 … ersetzt. Nichts wird gesendet: Erst nach dem Freigeben lässt sich der Text kopieren oder speichern, und wohin er geht, entscheidest du.</p>
+      <label class="check"><input type="checkbox" id="inv-export-store" checked> Persönlichen Store verwenden <span class="hint-inline">gleiche Platzhalter wie bisher, später zurückwandelbar</span></label>
+      <div class="inv-export-status" id="inv-export-status" aria-live="polite"></div>
+      <div class="output inv-export-text" id="inv-export-text"></div>
+      <label class="check" id="inv-export-reviewed-row" hidden><input type="checkbox" id="inv-export-reviewed"> Ich habe die markierten Stellen geprüft; sie dürfen so weitergegeben werden.</label>
+    </div>
+    <footer class="dialog-foot">
+      <span class="foot-note" id="inv-export-note"></span>
+      <button class="btn" type="button" id="inv-export-release">Freigeben</button>
+      <button class="btn" type="button" id="inv-export-copy" disabled>Kopieren</button>
+      <button class="btn btn-primary" type="button" id="inv-export-save" disabled>Als Datei speichern</button>
+    </footer>
+  </form>
+</dialog>
+
 <script src="/static/app.js"></script>
+<script src="/static/investigate.js"></script>
 </body>
 </html>

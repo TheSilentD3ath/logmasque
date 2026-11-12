@@ -12,6 +12,7 @@ It does two jobs:
 
 - **Collect:** pick log files by day and log type from folders and ZIP archives, remove duplicates and write a folder or a compressed archive.
 - **Mask:** replace sensitive values with stable placeholders. The same IP address becomes `[IPv4-001]` in every file you process, so relationships in the data stay readable. Placeholders can be turned back into the original values on your own machine. Alternatively, values are removed for good.
+- **Investigate:** index many log files at once, search them, follow an address, account, message or session across all of them on one timeline, and see how the values relate. A selection can be exported masked for an outside analysis, with the same placeholders.
 
 Everything runs locally. The browser interface talks only to a server on `127.0.0.1`, and nothing is uploaded anywhere. LogMasque uses the Python standard library only and has no third-party dependencies.
 
@@ -98,6 +99,20 @@ Additional options:
 - `check` counts what still looks sensitive in a masked file and prints counts only, never values.
 - `--restore` turns placeholders back into original values using the local mapping store.
 
+### Investigating logs
+
+The **Untersuchen** tab of the browser interface builds a local index over any number of log files and keeps it as an *investigation* next to the mapping store. Details are in [docs/investigator.md](docs/investigator.md).
+
+- **Import.** Files and folders are read once, line by line, and never written to. The format of each file is detected from its first lines: MDaemon event logs (sessions, partial transcripts, filter blocks), MDaemon component logs, request logs with a bracketed time stamp, HTTP access logs, column-separated logs, ctime logs, and a generic reader for anything with a time stamp at the start of a line. UTF-8, UTF-8 with BOM and Windows-1252 are detected per file. Byte-identical files are imported once, and of a log that grew between two copies only the longest copy is read; an earlier copy already in the index is replaced by it.
+- **Large log sets.** A quick scan first reads only the start and end of every file and shows the log types with their size and time range. Each type can be imported first, in the background or not at all, and a time window leaves out files outside it. The priority files are searchable as soon as they are in, while the rest keeps coming in. Large imports are parsed in up to three helper processes while the main process writes the index; `LOGMASQUE_IMPORT_READERS=0` turns them off.
+- **Entities.** IP addresses (with and without port), mail addresses, accounts, ActiveSync devices, domains, host names, URLs, Message-IDs, MDaemon queue files, sessions and requests are recognized, along with status codes, message codes and process ids. An entity is one value; every place it appears is an occurrence with a role such as client, server, sender or recipient.
+- **Time.** Time stamps are normalized to UTC: a zone stated in the line wins, then a zone the file states (the "Server Shutdown" header of MDaemon logs), then the zone all stated zones of the investigation agree on, then this computer's. Zone and clock correction can be set per file. Lines without a time, with a broken time or a time taken from the line before are marked as such and never placed by guesswork.
+- **Correlation in three levels.** *Direct*: the same event, session, request or processing block, or the same Message-ID or queue file. *Strong*: a shared address, account or device close in time. *Possible*: the same far apart in time, a shared address (NAT, proxy) close in time, or - only when asked for - closeness in time alone. Every linked event names the basis of its link.
+- **False positives are held back.** A Message-ID or domain seen in very many contexts, an address several accounts log in from, the server's own address, `postmaster`, `127.0.0.1` and the like do not link events by themselves. Each entity can be excluded from linking or used on purpose, and single links can be excluded.
+- **Search and timeline.** Free text (SQLite FTS5 when available), known values with suggestions, and filters for time range, files, event types, levels and detail lines combine freely. The timeline pages through results, shows the distribution over time and opens every event with its original lines and their surroundings.
+- **Entity explorer and graph.** Occurrences per file, first and last sighting, roles, directly related values and possible relations; a small relationship graph with zoom, pan, selection, type filter and navigation back to the logs.
+- **Export for an outside analysis.** Chosen events are masked with the same mapping store and placeholders as everywhere else, file names are replaced by `Q1`, `Q2`, ... with the log type. The preview marks anything that still needs a look; a value of the events that is still readable blocks the export. Nothing is sent anywhere: after release the text can be copied or saved, and where it goes is up to you. The analysis itself never needs an outside service.
+
 ## Installation and requirements
 
 - Python 3.9 or newer. Tested on 3.9 to 3.14 on Linux.
@@ -152,6 +167,7 @@ On Linux the first run asks for a password that protects the mapping store, with
   - Click a replacement to add it to "never replace".
   - Select text and choose "always replace" to add an own term.
   - Store export, import, reset and diagnosis are on the store card.
+- **Investigate:** create an investigation, add log files or folders, then search, follow values across the logs on the timeline, explore entities and their graph, and export a masked selection. See [Investigating logs](#investigating-logs).
 
 Security of the local server:
 
@@ -192,6 +208,7 @@ Environment variables:
 |---|---|
 | `LOGMASQUE_STORE_PASSWORD` | Store password for unattended runs without DPAPI. Prefer the interactive prompt for real data. |
 | `LOGMASQUE_LEGACY_DPAPI_ENTROPY` | Additional DPAPI entropy values, separated by `;`, for stores created by other builds. See [Mapping-store security](#mapping-store-security). |
+| `LOGMASQUE_IMPORT_READERS` | Number of helper processes that parse logs for a large investigation import; `0` turns them off. By default up to three, from 32 MB on. |
 | `LOGMASQUE_PRIVATE_VALUES` | Path to a private list of real values for the leak guard test. Used by the test suite only. |
 
 ## Pseudonymization versus redaction
@@ -240,6 +257,7 @@ The mapping store holds every original value and its placeholder. Anyone who can
   - For UTF-8 files without a byte order mark, choose `--encoding utf8` so that non-ASCII names are detected correctly.
   - Other choices: `ansi`, `latin1`, `ascii`, `unicode` (UTF-16) and any Python codec name.
 - **Archive output:** ZIP with LZMA compression (standard library), or `.7z` through an installed 7-Zip.
+- **Investigations:** files with the extensions `.log`, `.txt`, `.xml`, `.csv` and `.json`, from folders (recursively) or picked one by one. ZIP archives are not read directly; collect them into a folder first.
 
 ## Limitations
 
@@ -250,6 +268,7 @@ The mapping store holds every original value and its placeholder. Anyone who can
 - **Restoring.** It only works with the same mapping store. Redacted output cannot be restored.
 - **Interface language.** The browser interface is German only.
 - **Platforms.** DPAPI protection is Windows-only; the Windows code path is not covered by the automated tests, which run on Linux and replace the DPAPI call with a stand-in.
+- **Investigations.** Correlation reads what the logs state; it does not know the network. Closeness in time is never proof, and a "possible" link is a hint to check, not a finding. The format rules were derived from MDaemon 26 logs; other products are read by the generic reader, which knows time stamps and identifiers but no sessions or event types. See [docs/investigator.md](docs/investigator.md#limitations).
 
 Planned, not implemented: an English interface, configurable placeholder names and 7z input archives.
 
@@ -259,6 +278,7 @@ Planned, not implemented: an English interface, configurable placeholder names a
 - Always review masked output before you share it. `logmasque check` helps but is not a substitute for reading the text.
 - Keep the mapping store, its backups, exports and mapping CSV files private and out of version control. Do not send them together with masked data.
 - The collection manifest and the log file `logmasque.log` (next to the store) contain local paths. They are diagnostic data for your machine, not material to share.
+- An investigation (`investigations/*.lminv` next to the store) holds the original log lines in full. Treat it like the logs themselves and delete it in the interface when the case is closed. Only the export of the Investigate tab is masked.
 - Use only synthetic data in bug reports, tests and documentation.
 
 Please report vulnerabilities as described in [SECURITY.md](SECURITY.md).
