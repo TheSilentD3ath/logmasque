@@ -101,6 +101,12 @@ def _main():
     return main()
 
 
+if __name__ == "__mp_main__":
+    # A helper process of the log import runs this file under that name; it
+    # needs the modules carried here as well.
+    sys.meta_path.insert(0, _BundleImporter(os.path.abspath(__file__)))
+
+
 if __name__ == "__main__":
     try:
         code = _main()

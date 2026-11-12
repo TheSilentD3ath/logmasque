@@ -35,12 +35,17 @@ NON_TLD_SUFFIXES = frozenset(
     """
     dll exe log txt dat ini xml msg eml tmp bak cfg mrk sem csv json ps1 bat
     cmd zip gz html htm js css pdf png jpg gif db fdb mdb sys lst idx tld
+    ico svg jpeg webp woff woff2 ttf eot map php asp aspx jsp cgi raw
     """.split()
 )
 
 # Abbreviations with a dot inside that look like a domain to the pattern;
 # Italian mail is full of them ("Gentile Sig.ra", "Spett.le").
 NOT_A_DOMAIN = frozenset("sig.ra sig.na spett.le gent.mo gent.ma gent.mi egr.io dott.ssa ing.re".split())
+
+# Top-level domains still taken as such when written "Example.Com". Words that
+# also open sentences ("It", "In", "Es", "At", "To") are left out on purpose.
+TITLE_CASE_TLDS = frozenset("com net org de ch eu io info biz uk fr nl edu gov".split())
 
 REDACTION_PLACEHOLDERS = {
     "IPv4": "[IP-ENTFERNT]",
@@ -74,17 +79,20 @@ CATEGORY_LABELS = {
     "Account": "IBAN",
 }
 
-_IPV4 = r"(?<![\w.-])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\w.-])"
+_IPV4 = r"(?<![\w.-])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\w-])(?!\.\w)"
 _IPV6 = (
     r"(?<![0-9A-Fa-f:.])(?:"
     r"::[fF]{4}:(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
     r"|(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}"
     r"|(?:[0-9A-Fa-f]{1,4}:){1,7}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?"
     r"|::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,7})"
-    r")(?![0-9A-Fa-f:.])"
+    r")(?![0-9A-Fa-f:])(?!\.[0-9A-Fa-f])"
 )
+# The local part allows what mailboxes use in practice. The full RFC set would
+# take "User=" in a query string, a quote or a path in front as part of the
+# address, and the same address would get a new placeholder in every context.
 _MAIL = (
-    r"(?<![\w.+-])[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"(?<![A-Za-z0-9.+-])[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*"
     r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
 )
 _FQDN = (
@@ -290,11 +298,14 @@ class Anonymizer:
         if self._literal_cache is None or self._literal_cache[0] != revision:
             maps = self.mapping.maps
             terms = [term for term in self.mapping.terms if not self.mapping.is_ignored(term)]
+            # A label such as "Local" that an earlier version took for a name
+            # stays in the store, so old placeholders can still be restored,
+            # but it is no longer replaced.
             names = [
                 key
                 for category in ("Person", "Company", "Street", "City")
                 for key in maps[category]
-                if not self.mapping.is_ignored(key)
+                if not self.mapping.is_ignored(key) and not (category == "Person" and pii._is_stop(key))
             ]
             self._literal_cache = (revision, _term_pattern(terms), pii.NameIndex(names))
         return self._literal_cache[1], self._literal_cache[2]
@@ -355,11 +366,18 @@ class Anonymizer:
 
     def _replace_company(self, match: re.Match):
         raw = match.group(0)
-        value = pii.clean_company(raw)
-        if not value or self.mapping.is_ignored(value):
+        cleaned = pii.clean_company(raw)
+        if not cleaned:
             return None
-        start = match.start() + raw.rfind(value) if value in raw else match.start()
-        return self._personal("Company", value), "Company", start, start + len(value)
+        # Leading words that are no part of the name are dropped; the rest is
+        # kept exactly as written, so restoring gives back the same bytes.
+        words = list(re.finditer(r"[^ \t]+", raw))
+        first = words[len(words) - len(cleaned.split())]
+        value = raw[first.start():]
+        if self.mapping.is_ignored(value):
+            return None
+        start = match.start() + first.start()
+        return self._personal("Company", value), "Company", start, match.end()
 
     def process_line(self, line: str) -> str:
         return "".join(segment.text for segment in self.segments(line))
@@ -466,10 +484,12 @@ class Anonymizer:
 
     def _replace_fqdn(self, value: str) -> tuple[str, str] | None:
         first, _, last = value.partition(".")
-        # "configuration.You": two sentences glued together when a mail was
-        # flattened to plain text, not a domain. Nobody writes a domain that way.
-        if "." not in last and first.islower() and last[:1].isupper() and last[1:].islower():
-            return None
+        # "configuration.You", "Task 30927.Regards", "this Feature.Mit": sentences
+        # glued together when a mail was flattened to plain text, not domains.
+        # Only a common top-level domain is taken in that spelling ("Example.Com").
+        if "." not in last and last[:1].isupper() and last[1:].islower():
+            if first.islower() or first.isdigit() or last.lower() not in TITLE_CASE_TLDS:
+                return None
         if value.lower() in NOT_A_DOMAIN:
             return None
         last_label = value.rpartition(".")[2].lower()
@@ -684,8 +704,10 @@ def _term_pattern(terms: list[str]) -> re.Pattern | None:
     parts = []
     for term in sorted({term for term in terms if term.strip()}, key=len, reverse=True):
         body = re.escape(term)
-        head = r"(?<!\w)" if re.match(r"\w", term) else ""
-        tail = r"(?!\w)" if re.search(r"\w$", term) else ""
+        # Not inside a mail address or a domain: "nordlicht@example.org" is
+        # masked as a whole by the address rule, domain included.
+        head = r"(?<![\w@])(?<!\w\.)" if re.match(r"\w", term) else ""
+        tail = r"(?!\w)(?!@)(?!\.[\w-])" if re.search(r"\w$", term) else ""
         parts.append(head + body + tail)
     return re.compile("|".join(parts), re.IGNORECASE) if parts else None
 

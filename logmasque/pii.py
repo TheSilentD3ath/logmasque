@@ -61,6 +61,9 @@ STOP_WORDS = frozenset(
     meneer mevrouw hello good morning afternoon evening everyone colleague colleagues customer gentile
     caro cara estimado estimada beste bonjour buongiorno buonasera ciao hola hej hoi sincerely faithfully
     truly yours many warm kindest cordiali distinti saluti cordialement saludos atentamente groet groeten
+    toll toll-free tollfree free local direct direkt main cell hotline switchboard büro international intl
+    merci grazie gracias bedankt tack thx all both again guys folks schön sehr nochmal nochmals vorab
+    beaucoup mille tante muchas much lots you
     """.split()
 )
 
@@ -129,11 +132,17 @@ def _append(target: list[str], value: str) -> None:
         target.append(value)
 
 
+# "Erika Muster from Example Corp", "Erika Muster (Example Corp)": the name comes first.
+_DISPLAY_SUFFIX = re.compile(r"[ \t]+(?:(?i:from|via|at|for)[ \t]|[|(/–—-][ \t]*)")
+
+
 def classify(value: str, findings: Findings) -> None:
     """A display name is either a company, a person, or neither."""
     value = value.strip().strip("\"'").strip()
     if not value or "@" in value or re.search(r"\d{3}", value):
         return
+    if not _LEGAL_END.search(value):
+        value = _DISPLAY_SUFFIX.split(value, maxsplit=1)[0].strip()
     if _LEGAL_END.search(value):
         _append(findings.company, clean_company(value))
         return
@@ -168,7 +177,8 @@ _SALUTATION = re.compile(
 _GREETING = re.compile(
     rf"{_START}(?:Hallo|Hello|Hi|Hey|Moin|Servus|Lieber|Liebe|Dear|Guten{_GAP}(?:Morgen|Tag|Abend)"
     rf"|Good{_GAP}(?:morning|afternoon|evening|Morning|Afternoon|Evening)|Bonjour|Buongiorno|Buonasera|Ciao"
-    rf"|Gentile|Caro|Cara|Hola|Estimado|Estimada|Beste|Hej|Hoi){_GAP}"
+    rf"|Gentile|Caro|Cara|Hola|Estimado|Estimada|Beste|Hej|Hoi"
+    rf"|Thanks|Thank{_GAP}you|Thx|Danke|Vielen{_GAP}Dank|Merci|Grazie|Gracias|Bedankt|Tack){_GAP}"
     rf"(?P<v>{NAME_WORD})(?:{_GAP}(?P<w>{NAME_WORD}))?(?=[ \t]*(?:[,!.\r\n]|$))"
 )
 _CLOSING_PHRASE = (
@@ -182,7 +192,8 @@ _CLOSING_PHRASE = (
     r"|saludos|groeten|mvg)"
 )
 _CLOSING = re.compile(
-    rf"(?m)(?:{_CLOSING_PHRASE})(?:[ \t]*/[ \t]*(?i:kind|best)[ \t]+regards)?[ \t]*[,.!]?\s{{0,6}}"
+    rf"(?m)(?:{_CLOSING_PHRASE})(?:[ \t]*/[ \t]*(?i:kind|best)[ \t]+regards)?[ \t]*[,.!]?"
+    rf"(?:[ \t]*(?:-{{2,3}}|[—–])[ \t]*)?\s{{0,6}}"
     rf"{_TITLE}(?P<v>{NAME_WORD}{_NAME_TAIL}{{0,3}})"
 )
 _ROLE = re.compile(
@@ -213,6 +224,7 @@ _HINT_WORDS = {
     "greeting": (
         "hallo", "hello", "hi ", "hey", "moin", "servus", "liebe", "dear", "guten ", "good ", "bonjour",
         "buongiorno", "buonasera", "ciao", "gentile", "caro", "cara", "hola", "estimad", "beste", "hej", "hoi",
+        "thank", "thx", "danke", "vielen dank", "merci", "grazie", "gracias", "bedankt", "tack",
     ),
     "closing": (
         "grüß", "grüss", "gruß", "gruss", "gruess", "regards", "wishes", "cheers", "mfg", "lg", "vg", "thanks",
@@ -330,9 +342,12 @@ CITY = re.compile(
 PHONE_INTERNATIONAL = re.compile(
     r"(?<![\w+])(?:\+|00(?=[1-9]\d{0,2}[ /.-]))[1-9]\d{0,2}(?:[ ./-]?\(0\))?(?:[ ./-]?\d){6,14}(?![\w])"
 )
+# Words that only label a number when a colon follows: "Toll-Free: 800 …".
+_COLON_LABELS = r"toll[ -]?free|local|direct|direkt|main|office|büro|cell|hotline|switchboard"
 PHONE_LABELLED = re.compile(
     rf"(?:{_START}(?i:(?:tel(?:efon)?|fon|fax|telefax|mobil(?:funk)?|mobile|handy|phone|durchwahl|zentrale)"
-    r"\.?)|(?<![\w])[TFMP][ \t]*:)[ \t]*[.:]?[ \t]*(?P<number>\+?\(?\d[\d \t./()-]{5,22}\d)"
+    rf"\.?|(?:{_COLON_LABELS})(?=[ \t]*:))|(?<![\w])[TFMP][ \t]*:)[ \t]*[.:]?[ \t]*"
+    r"(?P<number>\+?\(?\d[\d \t./()-]{5,22}\d)"
 )
 # The court names the place of the company: "Amtsgericht Musterstadt HRB 12345"
 # and "Amtsgericht Musterstadt: HRB 12345" go as one, the court alone as well.
@@ -347,7 +362,9 @@ REGISTER = re.compile(
     rf"(?![\d{L}_])"  # a capital glued on is the next word: "HRB 4711UST-ID"
 )
 IBAN = re.compile(r"(?<![\w])[A-Z]{2}\d{2}(?:[ \t]?[A-Z0-9]{4}){2,7}(?:[ \t]?[A-Z0-9]{1,3})?(?![\w])")
-COMPANY = re.compile(rf"(?:(?<![\w&@.])|(?<=[{L}])(?=[{U}]))(?:[{U}0-9][\w&.+'-]*[ \t]+){{1,4}}(?:{LEGAL_FORMS})(?![\w])")
+# Words of a company name stand one blank apart; two blanks were a line break
+# before the text was flattened ("Trainee  Muster GmbH").
+COMPANY = re.compile(rf"(?:(?<![\w&@.])|(?<=[{L}])(?=[{U}]))(?:[{U}0-9][\w&.+'-]*[ \t](?![ \t])){{1,4}}(?:{LEGAL_FORMS})(?![\w])")
 
 
 def valid_iban(value: str) -> bool:
@@ -359,8 +376,12 @@ def valid_iban(value: str) -> bool:
     return int(digits) % 97 == 1
 
 
+_DATE_LIKE = re.compile(r"(?:19|20)\d\d[-./](?:0[1-9]|1[0-2])[-./]\d\d|\d\d[-./](?:0[1-9]|1[0-2])[-./](?:19|20)\d\d")
+
+
 def phone_digits_ok(value: str) -> bool:
-    return 7 <= sum(char.isdigit() for char in value) <= 15
+    # "Local: 2026-10-15 10:00" in a log is a date, not a number to call.
+    return 7 <= sum(char.isdigit() for char in value) <= 15 and not _DATE_LIKE.match(value.lstrip("+("))
 
 
 def trim_city(value: str) -> str:
@@ -445,7 +466,7 @@ _LEGAL_WORDS = re.compile(rf"(?<![\w])(?:{LEGAL_FORMS})(?![\w])")
 # Gates as plain literal alternatives: one C-level search each, no Python loop.
 _GATE_CODES = re.compile(r"HR|VR|GnR|DE|ATU|CHE|gericht")
 _GATE_ACCOUNT = re.compile(r"iban|konto|account|bankverbindung")
-_GATE_LABEL = re.compile(r"tel|fon|fax|mobil|handy|phone|durchwahl|zentrale")
+_GATE_LABEL = re.compile(rf"tel|fon|fax|mobil|handy|phone|durchwahl|zentrale|(?:{_COLON_LABELS})[ \t]*:")
 _GATE_STREET_LOWER = re.compile(r"straße|strasse|str\.|weg|allee|gasse|chaussee")
 _GATE_STREET_WORD = re.compile(r"Platz|Ring|Damm|Ufer|Markt|Graben|Steig|Stieg|Pfad|Kamp")
 
